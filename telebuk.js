@@ -260,7 +260,19 @@ async function importPost(file) {
 
 		} else {
 			console.log('File không đúng định dạng, vui lòng xem lại');
-
+			const responseShop = await fetch(`https://api.telegram.org/bot${process.env.TELEBUK_BOT_TOKEN}/sendMessage`, {
+				method: 'post',
+				body: JSON.stringify({
+					"parse_mode": "html",
+					"chat_id": shop_info.id,
+					"text": 'File không đúng định dạng, vui lòng xem lại',
+					"disable_web_page_preview": true,
+					"protect_content": true
+				}),
+				headers: { 'Content-Type': 'application/json' }
+			});
+			const dataShop = await responseShop.json();
+			console.log(dataShop)
 		}
 	})
 }
