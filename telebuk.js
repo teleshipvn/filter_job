@@ -15,7 +15,9 @@ const dbName = "teleship";
 const db = clientMongo.db(dbName);
 const Post = db.collection("post");
 const Trip = db.collection("trip");
-const Shipper = db.collection("shipper");
+const Shipper = db.collection("shipper_shop");
+const Shop = db.collection("shop");
+
 await clientMongo.connect();
 console.log("Connected successfully to MongoDB server");
 // let shipper_info = await Shipper.findOne({phone: "+84905997022"})
@@ -38,13 +40,14 @@ await subscriber.subscribe(["NEW_POST_IMPORT", 'NEW_POST_CONFIRM'], async (data,
 		confirmPost(data);
 	}
 	if (channel === 'NEW_POST_IMPORT') {
-		importPost(data);
+		let split = data.split("-");
+		importPost(split[0], split[1]);
 	}
 });
 
 const ExcelSchema = {
 	'telebuk': {
-		'services_id': {
+		'services_id(*)': {
 			// JSON object property name.
 			prop: 'services_id',
 			type: String,
@@ -54,32 +57,32 @@ const ExcelSchema = {
 			prop: 'partner_bill',
 			type: String
 		},
-		'pickup_name': {
+		'pickup_name(*)': {
 			prop: 'pickup_name',
 			type: String,
 			required: true
 		},
-		'pickup_phone': {
+		'pickup_phone(*)': {
 			prop: 'pickup_phone',
 			type: String,
 			required: true
 		},
-		'pickup_add': {
+		'pickup_add(*)': {
 			prop: 'pickup_add',
 			type: String,
 			required: true
 		},
-		'delivery_name': {
+		'delivery_name(*)': {
 			prop: 'delivery_name',
 			type: String,
 			required: true
 		},
-		'delivery_phone': {
+		'delivery_phone(*)': {
 			prop: 'delivery_phone',
 			type: String,
 			required: true
 		},
-		'delivery_add': {
+		'delivery_add(*)': {
 			prop: 'delivery_add',
 			type: String,
 			required: true
@@ -109,6 +112,10 @@ const ExcelSchema = {
 async function confirmPost(requestId) {
 	const trips = await Trip.find({requestId}).toArray()
 	if (trips && trips.length) {
+		let total_trip = trips.length;
+		let total_order = 0;
+		let total_cod = 0;
+		
 		const responseReport = await fetch(`https://report-dashboard-apis.qupworld.com/api/save_trip`, {
 				method: 'post',
 				body: JSON.stringify(trips),
@@ -118,6 +125,8 @@ async function confirmPost(requestId) {
 		console.log(dataReport)
 
 		trips.map(async function (trip) {
+			total_order += trip.orders.length;
+			total_cod += trip.total_cod;
 			let caption = ''
 			caption += 'Tổng đơn: ' + trip.orders.length;
 			caption += '\nTổng COD: ' + trip.total_cod
@@ -149,16 +158,50 @@ async function confirmPost(requestId) {
 			const data = await response.json();
 			console.log(data)
 		})
+
+		let captionShop = 'Đơn hàng đang được chuyển đến shipper\n';
+		captionShop += 'Số chuyến: ' + total_trip;
+		captionShop += '\nSố đơn: ' + total_order;
+		captionShop += '\nTổng COD: ' + total_cod
+		captionShop += '\nKhoảng cách:'
+		const responseShop = await fetch(`https://api.telegram.org/bot${process.env.TELEBUK_BOT_TOKEN}/sendPhoto`, {
+			method: 'post',
+			body: JSON.stringify({
+				"parse_mode": "html",
+				"chat_id": trips[0].shipper_tele_id,
+				"caption": captionShop,
+				"photo": "https://i.imgur.com/0MgyMBb.png",
+				"disable_web_page_preview": true,
+				"protect_content": true,
+				"reply_markup": {
+					"inline_keyboard": [
+						[
+							{
+								"text": "Chi tiết đơn hàng",
+								"web_app": {
+									"url": "https://report-dashboard-apis.qupworld.com/api/get_trip/" + requestId
+								}
+							}
+						]
+					]
+				}
+			}),
+			headers: { 'Content-Type': 'application/json' }
+		});
+		const dataShop = await responseShop.json();
+		console.log(dataShop)
+		
 	} else {
 		console.log('not found trip')
 	}
 }
-async function importPost(file) {
+async function importPost(file, sender_id) {
 
 	// File path.
 	readXlsxFile(file, { schema: ExcelSchema.telebuk }).then(async (data) => {
 		// `rows` is an array of rows
 		// each row being an array of cells.
+		console.log(JSON.stringify(data));
 		if (data && data.rows && data.rows.length) {
 			let total_trip = 0;
 			let total_order = 0;
@@ -167,10 +210,11 @@ async function importPost(file) {
 				return item.shipper_phone
 			})
 			let trips = [];
-			let requestId = new ObjectId();
+			let requestId = new ObjectId().toString();
 			let shipper_phones = _.keys(rs);
-			let shop_phone = data.rows[0].pickup_phone
-			const shop_info = await Shipper.findOne({ phone: shop_phone })
+			// let shop_phone = data.rows[0].pickup_phone
+			const shop_info = await Shop.findOne({ id: sender_id })
+			console.log(shop_info)
 			await Promise.all(
 				shipper_phones.map(async (phone) => {
 					const shipper_info = await Shipper.findOne({ phone: phone })
@@ -216,7 +260,7 @@ async function importPost(file) {
 				
 				let captionShop = 'Vui lòng kiểm tra và xác nhận\n';
 				captionShop += 'Số chuyến: ' + total_trip;
-				captionShop += 'Số đơn: ' + total_order;
+				captionShop += '\nSố đơn: ' + total_order;
 				captionShop += '\nTổng COD: ' + total_cod
 				captionShop += '\nKhoảng cách:'
 				const responseShop = await fetch(`https://api.telegram.org/bot${process.env.TELEBUK_BOT_TOKEN}/sendPhoto`, {
@@ -255,9 +299,38 @@ async function importPost(file) {
 				});
 				const dataShop = await responseShop.json();
 				console.log(dataShop)
-				
+				console.log(JSON.stringify({
+					"parse_mode": "html",
+					"chat_id": shop_info.id,
+					"caption": captionShop,
+					"photo": "https://i.imgur.com/0MgyMBb.png",
+					"disable_web_page_preview": true,
+					"protect_content": true,
+					"reply_markup": {
+						"inline_keyboard": [
+							// [
+							// 	{
+							// 		"text": "Chi tiết đơn hàng",
+							// 		"web_app": {
+							// 			"url": "https://report-dashboard-apis.qupworld.com/api/get_trip/" + requestId
+							// 		}
+							// 	}
+							// ],
+							[
+								{
+									"text": "XÁC NHẬN",
+									"callback_data": "accept-" + requestId
+								},
+								{
+									"text": "HUỶ",
+									"callback_data": "reject-" + requestId
+								}
+							]
+						]
+					}
+				}))
 			}
-
+			
 		} else {
 			console.log('File không đúng định dạng, vui lòng xem lại');
 			const responseShop = await fetch(`https://api.telegram.org/bot${process.env.TELEBUK_BOT_TOKEN}/sendMessage`, {
